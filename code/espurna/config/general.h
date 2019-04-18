@@ -689,8 +689,8 @@
 #endif
 
 
-#ifndef MQTT_USE_ASYNC
-#define MQTT_USE_ASYNC              1           // Use AysncMQTTClient (1) or PubSubClient (0)
+#ifndef MQTT_LIBRARY
+#define MQTT_LIBRARY                MQTT_ASYNC       // Choose between: MQTT_ASYNC (AysncMQTTClient), MQTT_PUBSUB (PubSubClient), MQTT_ARDUINO (Arduino-MQTT)
 #endif
 
 // MQTT OVER SSL
@@ -698,17 +698,19 @@
 // It could be a good idea to use it in conjuntion with WEB_SUPPORT=0.
 // Requires ASYNC_TCP_SSL_ENABLED to 1 and ESP8266 Arduino Core 2.4.0.
 //
-// You can use SSL with MQTT_USE_ASYNC=1 (AsyncMqttClient library)
+// You can use SSL with MQTT_LIBRARY=ASYNC (AsyncMqttClient library)
 // but you might experience hiccups on the web interface, so my recommendation is:
 // WEB_SUPPORT=0
 //
-// If you use SSL with MQTT_USE_ASYNC=0 (PubSubClient library)
+// If you use SSL with MQTT_LIBRARY=PUBSUB (PubSubClient library) or MQTT_LIBRARY=ARDUINO (Arduino-MQTT library)
 // you will have to disable all the modules that use ESPAsyncTCP, that is:
-// ALEXA_SUPPORT=0, INFLUXDB_SUPPORT=0, TELNET_SUPPORT=0, THINGSPEAK_SUPPORT=0 and WEB_SUPPORT=0
+// ALEXA_SUPPORT=0, INFLUXDB_SUPPORT=0, TELNET_SUPPORT=0, THINGSPEAK_SUPPORT=0, DEBUG_TELNET_SUPPORT=0, OTA_MQTT_SUPPORT=0, TERMINAL_SUPPORT=0 and WEB_SUPPORT=0
 //
-// You will need the fingerprint for your MQTT server, example for CloudMQTT:
-// $ echo -n | openssl s_client -connect m11.cloudmqtt.com:24055 > cloudmqtt.pem
-// $ openssl x509 -noout -in cloudmqtt.pem -fingerprint -sha1
+// You will need the fingerprint of your MQTT server, in order to prevent MITS attacks.
+// To get a certificate fingerprint, run the following command:
+// $ echo -n | openssl s_client -connect mqtt.googleapis.com:8883 2>&1 | openssl x509 -noout -fingerprint -sha1 | cut -d\= -f2
+// Note that this fingerprint changes with e.g. LetsEncrypt renewals or when the CSR changes.
+// It's also possible to leave the fingerprint empty, the certificate is then always trusted.
 
 #ifndef MQTT_SSL_ENABLED
 #define MQTT_SSL_ENABLED            0               // By default MQTT over SSL will not be enabled

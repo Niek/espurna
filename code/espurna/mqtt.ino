@@ -6,6 +6,10 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 */
 
+#define MQTT_ASYNC      0
+#define MQTT_ARDUINO    1
+#define MQTT_PUBSUB     2
+
 #if MQTT_SUPPORT
 
 #include <EEPROM_Rotate.h>
@@ -15,23 +19,31 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <vector>
 #include <Ticker.h>
 
-#if MQTT_USE_ASYNC // Using AsyncMqttClient
+#if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
+    #include <AsyncMqttClient.h>
+    AsyncMqttClient _mqtt;
+#else // Arduino-MQTT or PubSubClient
+    WiFiClient _mqtt_client;
+    bool _mqtt_connected = false;
 
-#include <AsyncMqttClient.h>
-AsyncMqttClient _mqtt;
+    #if ASYNC_TCP_SSL_ENABLED
+        #define USING_AXTLS // do not use BearSSL
+        #include "WiFiClientSecure.h"
+        axTLS::WiFiClientSecure _mqtt_client_secure;
+    #endif
 
-#else // Using PubSubClient
-
-#include <PubSubClient.h>
-PubSubClient _mqtt;
-bool _mqtt_connected = false;
-
-WiFiClient _mqtt_client;
-#if ASYNC_TCP_SSL_ENABLED
-WiFiClientSecure _mqtt_client_secure;
-#endif // ASYNC_TCP_SSL_ENABLED
-
-#endif // MQTT_USE_ASYNC
+    #if MQTT_LIBRARY == MQTT_ARDUINO // Using Arduino-MQTT
+        #include <MQTTClient.h>
+        #ifdef MQTT_MAX_PACKET_SIZE
+        MQTTClient _mqtt(MQTT_MAX_PACKET_SIZE);
+        #else
+        MQTTClient _mqtt();
+        #endif
+    #else // Using PubSubClient
+        #include <PubSubClient.h>
+        PubSubClient _mqtt;
+    #endif
+#endif
 
 bool _mqtt_enabled = MQTT_ENABLED;
 bool _mqtt_use_json = false;
@@ -106,7 +118,7 @@ void _mqttConnect() {
 
     DEBUG_MSG_P(PSTR("[MQTT] Connecting to broker at %s:%d\n"), host, port);
 
-    #if MQTT_USE_ASYNC
+    #if MQTT_LIBRARY == MQTT_ASYNC
         _mqtt_connecting = true;
 
         _mqtt.setServer(host, port);
@@ -126,10 +138,12 @@ void _mqttConnect() {
             if (secure) {
                 DEBUG_MSG_P(PSTR("[MQTT] Using SSL\n"));
                 unsigned char fp[20] = {0};
-                if (sslFingerPrintArray(getSetting("mqttFP", MQTT_SSL_FINGERPRINT).c_str(), fp)) {
-                    _mqtt.addServerFingerprint(fp);
-                } else {
-                    DEBUG_MSG_P(PSTR("[MQTT] Wrong fingerprint\n"));
+                if (!getSetting("mqttFP", MQTT_SSL_FINGERPRINT).equals("")) {
+                    if (sslFingerPrintArray(getSetting("mqttFP", MQTT_SSL_FINGERPRINT).c_str(), fp)) {
+                        _mqtt.addServerFingerprint(fp);
+                    } else {
+                        DEBUG_MSG_P(PSTR("[MQTT] Wrong fingerprint\n"));
+                    }
                 }
             }
 
@@ -143,7 +157,7 @@ void _mqttConnect() {
 
         _mqtt.connect();
 
-    #else // not MQTT_USE_ASYNC
+    #else // Using PubSubClient or Arduino-MQTT
 
         bool response = true;
 
@@ -152,11 +166,21 @@ void _mqttConnect() {
             bool secure = getSetting("mqttUseSSL", MQTT_SSL_ENABLED).toInt() == 1;
             if (secure) {
                 DEBUG_MSG_P(PSTR("[MQTT] Using SSL\n"));
-                if (_mqtt_client_secure.connect(host, port)) {
+                if (getSetting("mqttFP", MQTT_SSL_FINGERPRINT).equals("")) {
+                    #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+                    _mqtt.begin(host, port, _mqtt_client_secure);
+                    #else // PubSubClient
+                    _mqtt.setClient(_mqtt_client_secure);
+                    #endif
+                } else if (_mqtt_client_secure.connect(host, port)) {
                     char fp[60] = {0};
                     if (sslFingerPrintChar(getSetting("mqttFP", MQTT_SSL_FINGERPRINT).c_str(), fp)) {
                         if (_mqtt_client_secure.verify(fp, host)) {
+                            #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+                            _mqtt.begin(host, port, _mqtt_client_secure);
+                            #else // PubSubClient
                             _mqtt.setClient(_mqtt_client_secure);
+                            #endif
                         } else {
                             DEBUG_MSG_P(PSTR("[MQTT] Invalid fingerprint\n"));
                             response = false;
@@ -173,16 +197,31 @@ void _mqttConnect() {
                 }
 
             } else {
+                #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+                _mqtt.begin(host, port, _mqtt_client);
+                #else // PubSubClient
                 _mqtt.setClient(_mqtt_client);
+                #endif
             }
 
         #else // not ASYNC_TCP_SSL_ENABLED
 
+            #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+            _mqtt.begin(host, port, _mqtt_client);
+            #else // PubSubClient
             _mqtt.setClient(_mqtt_client);
+            #endif
 
         #endif // ASYNC_TCP_SSL_ENABLED
 
         if (response) {
+
+            #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+
+            _mqtt.setWill(_mqtt_will, "0", _mqtt_qos, _mqtt_retain);
+            response = _mqtt.connect(_mqtt_clientid, _mqtt_user, _mqtt_pass);        
+
+            #else // PubSubClient
 
             _mqtt.setServer(host, port);
 
@@ -192,6 +231,8 @@ void _mqttConnect() {
             } else {
 				response = _mqtt.connect(_mqtt_clientid, _mqtt_will, _mqtt_qos, _mqtt_retain, "0");
             }
+
+            #endif
 
             DEBUG_MSG_P(PSTR("[MQTT] Client ID: %s\n"), _mqtt_clientid);
             DEBUG_MSG_P(PSTR("[MQTT] QoS: %d\n"), _mqtt_qos);
@@ -205,9 +246,10 @@ void _mqttConnect() {
             _mqttOnConnect();
         } else {
             DEBUG_MSG_P(PSTR("[MQTT] Connection failed\n"));
+            _mqtt_last_connection = millis();
         }
 
-    #endif // MQTT_USE_ASYNC
+    #endif // MQTT_LIBRARY == MQTT_ASYNC
 
     free(host);
 
@@ -510,10 +552,13 @@ String mqttTopic(const char * magnitude, unsigned int index, bool is_set) {
 void mqttSendRaw(const char * topic, const char * message, bool retain) {
 
     if (_mqtt.connected()) {
-        #if MQTT_USE_ASYNC
+        #if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
             unsigned int packetId = _mqtt.publish(topic, _mqtt_qos, retain, message);
             DEBUG_MSG_P(PSTR("[MQTT] Sending %s => %s (PID %d)\n"), topic, message, packetId);
-        #else
+        #elif MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
+            _mqtt.publish(topic, message, retain, _mqtt_qos);
+            DEBUG_MSG_P(PSTR("[MQTT] Sending %s => %s\n"), topic, message);
+        #else // PubSubClient
             _mqtt.publish(topic, message, retain);
             DEBUG_MSG_P(PSTR("[MQTT] Sending %s => %s\n"), topic, message);
         #endif
@@ -689,10 +734,10 @@ int8_t mqttEnqueue(const char * topic, const char * message) {
 
 void mqttSubscribeRaw(const char * topic) {
     if (_mqtt.connected() && (strlen(topic) > 0)) {
-        #if MQTT_USE_ASYNC
+        #if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
             unsigned int packetId = _mqtt.subscribe(topic, _mqtt_qos);
             DEBUG_MSG_P(PSTR("[MQTT] Subscribing to %s (PID %d)\n"), topic, packetId);
-        #else
+        #else // Arduino-MQTT or PubSubClient
             _mqtt.subscribe(topic, _mqtt_qos);
             DEBUG_MSG_P(PSTR("[MQTT] Subscribing to %s\n"), topic);
         #endif
@@ -705,10 +750,10 @@ void mqttSubscribe(const char * topic) {
 
 void mqttUnsubscribeRaw(const char * topic) {
     if (_mqtt.connected() && (strlen(topic) > 0)) {
-        #if MQTT_USE_ASYNC
+        #if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
             unsigned int packetId = _mqtt.unsubscribe(topic);
             DEBUG_MSG_P(PSTR("[MQTT] Unsubscribing to %s (PID %d)\n"), topic, packetId);
-        #else
+        #else // Arduino-MQTT or PubSubClient
             _mqtt.unsubscribe(topic);
             DEBUG_MSG_P(PSTR("[MQTT] Unsubscribing to %s\n"), topic);
         #endif
@@ -771,13 +816,13 @@ void mqttSetup() {
 
     _mqttBackwards();
 
-    DEBUG_MSG_P(PSTR("[MQTT] Async %s, SSL %s, Autoconnect %s\n"),
-        MQTT_USE_ASYNC ? "ENABLED" : "DISABLED",
+    DEBUG_MSG_P(PSTR("[MQTT] Library %s, SSL %s, Autoconnect %s\n"),
+        (MQTT_LIBRARY == MQTT_ASYNC ? "AsyncMqttClient" : (MQTT_LIBRARY == MQTT_ARDUINO ? "Arduino-MQTT" : "PubSubClient")),
         ASYNC_TCP_SSL_ENABLED ? "ENABLED" : "DISABLED",
         MQTT_AUTOCONNECT ? "ENABLED" : "DISABLED"
     );
 
-    #if MQTT_USE_ASYNC
+    #if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
 
         _mqtt.onConnect([](bool sessionPresent) {
             _mqttOnConnect();
@@ -815,13 +860,19 @@ void mqttSetup() {
             DEBUG_MSG_P(PSTR("[MQTT] Publish ACK for PID %d\n"), packetId);
         });
 
-    #else // not MQTT_USE_ASYNC
+    #elif MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
 
+        _mqtt.onMessageAdvanced([](MQTTClient *client, char topic[], char payload[], int length) {
+            _mqttOnMessage(topic, payload, length);
+        });
+
+    #else // PubSubClient
+    
         _mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {
             _mqttOnMessage(topic, (char *) payload, length);
         });
 
-    #endif // MQTT_USE_ASYNC
+    #endif // MQTT_LIBRARY == MQTT_ASYNC
 
     _mqttConfigure();
     mqttRegister(_mqttCallback);
@@ -845,11 +896,11 @@ void mqttLoop() {
 
     if (WiFi.status() != WL_CONNECTED) return;
 
-    #if MQTT_USE_ASYNC
+    #if MQTT_LIBRARY == MQTT_ASYNC
 
         _mqttConnect();
 
-    #else // not MQTT_USE_ASYNC
+    #else // MQTT_LIBRARY != MQTT_ASYNC
 
         if (_mqtt.connected()) {
 
@@ -866,7 +917,7 @@ void mqttLoop() {
 
         }
 
-    #endif
+    #endif // MQTT_LIBRARY == MQTT_ASYNC
 
 }
 
