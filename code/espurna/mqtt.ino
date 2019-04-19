@@ -19,6 +19,8 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <vector>
 #include <Ticker.h>
 
+#define USING_AXTLS // do not use BearSSL
+
 #if MQTT_LIBRARY == MQTT_ASYNC // AsyncMqttClient
     #include <AsyncMqttClient.h>
     AsyncMqttClient _mqtt;
@@ -27,9 +29,13 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
     bool _mqtt_connected = false;
 
     #if ASYNC_TCP_SSL_ENABLED
-        #define USING_AXTLS // do not use BearSSL
-        #include "WiFiClientSecure.h"
+        #ifdef USING_AXTLS
+        #include "WiFiClientSecureAxTLS.h"
         axTLS::WiFiClientSecure _mqtt_client_secure;
+        #else
+        #include "WiFiClientSecure.h"
+        BearSSL::WiFiClientSecure _mqtt_client_secure;
+        #endif
     #endif
 
     #if MQTT_LIBRARY == MQTT_ARDUINO // Using Arduino-MQTT
@@ -167,15 +173,23 @@ void _mqttConnect() {
             if (secure) {
                 DEBUG_MSG_P(PSTR("[MQTT] Using SSL\n"));
                 if (getSetting("mqttFP", MQTT_SSL_FINGERPRINT).equals("")) {
+                    #ifndef USING_AXTLS
+                        _mqtt_client_secure.setInsecure();
+                    #endif
+
                     #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
-                    _mqtt.begin(host, port, _mqtt_client_secure);
+                        _mqtt.begin(host, port, _mqtt_client_secure);
                     #else // PubSubClient
-                    _mqtt.setClient(_mqtt_client_secure);
+                        _mqtt.setClient(_mqtt_client_secure);
                     #endif
                 } else if (_mqtt_client_secure.connect(host, port)) {
                     char fp[60] = {0};
                     if (sslFingerPrintChar(getSetting("mqttFP", MQTT_SSL_FINGERPRINT).c_str(), fp)) {
+                        #ifdef USING_AXTLS
                         if (_mqtt_client_secure.verify(fp, host)) {
+                        #else
+                        if (_mqtt_client_secure.setFingerprint(fp)) {
+                        #endif
                             #if MQTT_LIBRARY == MQTT_ARDUINO // Arduino-MQTT
                             _mqtt.begin(host, port, _mqtt_client_secure);
                             #else // PubSubClient
